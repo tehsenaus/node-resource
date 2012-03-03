@@ -1,6 +1,10 @@
 
 var resource = module.exports = require('./lib/resource');
 var connect = require("connect");
+var coop = require("coop");
+var promise = require("node-promise");
+
+// Data stores
 
 resource.Resource.serverDataStores = {};
 resource.Resource.implement({
@@ -19,91 +23,176 @@ resource.Resource.implement({
 	}
 });
 
+
+
+// Server / Client bridge
+
+function serialize (context, x) {
+	return typeof x.bake === "function" ? x.bake(context) : x;
+}
+
+/**
+ * This is the join point between the server and client.
+ **/
+var ServerPublicResource = resource.DelegateResource.derived({
+	options: {
+		name: "ServerPublicResource"
+	},
+
+	initialize: function (resourceURL) {
+		this.super.apply(this, coop.pop(arguments));	
+	},
+	list: function (context) {
+		return this.super.call(this, arguments).then(function (items) {
+			return items.map(serialize.bind(this, context));
+		})
+	}
+});
+
+resource.export = function (resources, baseURL) {
+	baseURL = baseURL || '/api/';
+	var rs = resource.resources = {};
+	for(var n in resources) {
+		rs[n] = new ServerPublicResource(baseURL + n, resources[n]);
+		console.log(n, rs[n], resources[n]);
+	};
+	return resources;
+}
+
+
+
+// API generation
+
 resource.DelegateResource.implement({
 	createAPI: function () {
 		return this.resource.createAPI.apply(this.resource, arguments);
+	},
+	createAPIMiddleware: function () {
+		return this.resource.createAPIMiddleware.apply(this.resource, arguments);
+	},
+	createContextFromRequest: function (req) {
+		return this.resource.createContextFromRequest.apply(this.resource, arguments);
+	},
+	createQueryFromSlug: function () {
+		return this.resource.createQueryFromSlug.apply(this.resource, arguments);
 	}
 });
 
 
+function handler(fn) {
+	return function (req, res) {
+		//try {
+			fn.apply(this, arguments);
+		//} catch (e) {
+		//	res.error(e.toString());
+		//}
+	}
+}
+function readHandler (r, fn) {
+	return r.createAPIMiddleware()
+		.use(handler(function (req,res) {
+			var me = this, args = [].slice.call(arguments);
+			return promise.when(r.createContextFromRequest(req), function (context) {
+				return fn.apply(me, [context].concat(args));
+			});
+		}));
+}
+function modificationHandler (r, fn) {
+	return r.createAPIMiddleware()
+		.use(connect.bodyParser())
+		.use(handler(function (req,res) {
+			var me = this, args = [].slice.call(arguments);
+			return promise.when(r.createContextFromRequest(req), function (context) {
+				return fn.apply(me, [context].concat(args));
+			});
+		}));
+}
+
+
 resource.DataStoreResource.implement({
+	createContextFromRequest: function (req) {
+		return this.createDefaultContextFromRequest(req);
+	},
+	createDefaultContextFromRequest: function (req) {
+		return { isServer: true };
+	},
 	createQueryFromSlug: function (slug) {
 		return {
-			test: slug
+			id: slug
 		};
 	},
-	createChildAPI: function (queryStack) {
-		var r = this;
+	createChildAPI: function (r) {
 		return {
-			GET: function (req,res,slug) {
-				r.list(this.createQueryFromSlug(slug)).then(function (data) {
-					res.json({
-						objects: data
-					});
+			GET: readHandler(r, function (context,req,res,slug) {
+				r.list(context, r.createQueryFromSlug(slug)).then(function (data) {
+					res.json(data[0]);
 				})
-			}
+			})
 		}
 	},
-	createAPI: function (queryStack) {
-		var r = this;
+	createAPI: function (r) {
+		var me = this;
 		return {
-			"/:id": this.createChildAPI(),
-			GET: function (req,res) {
-				r.list({}).then(function (data) {
+			"/:id": this.createChildAPI(r),
+			GET: readHandler(r, function (context,req,res) {
+				r.list(context, {}).then(function (data) {
 					res.json({
 						objects: data
 					});	
 				})
-			},
-			POST: connect(
-				connect.bodyParser(),
-				function (req, res) {
-					//res.end("data: " + req.body.test);
-					r.create(req.body).then(function (item) {
-						res.json(item);
-					}, function (error) {
-						res.error(error);
-					});
-				}
-			)
+			}),
+			POST: modificationHandler(r, function (context, req, res) {
+				r.create(context, req.body).then(function (item) {
+					res.created().json(item);
+				}, function (error) {
+					res.error(error.toString());
+				});
+			})
 		}
+	},
+	createAPIMiddleware: function () {
+		return this.createDefaultAPIMiddleware();
+	},
+	createDefaultAPIMiddleware: function () {
+		return connect().use(connect.query());
 	}
 });
 
 resource.ChildResource.implement({
-	createAPI: function (modelQueryAccessor) {
-		var r = this;
-		var api = this.super();
+	createAPI: function (r, modelQueryAccessor) {
+		var me = this;
+		var api = this.super(r);
+
 		api.POST = function (req, res, next) {
 			var args = Array.prototype.slice.call(arguments, 3);
-			return (connect(
-				connect.bodyParser(),
-				function (req, res, next) {
+			return (me.createAPIMiddleware()
+				.use(connect.bodyParser())
+				.use(handler(function (req, res, next) {
 					var modelQuery = modelQueryAccessor(args);
-					//res.end("data: " + req.body.test);
-					r.create(modelQuery, req.body).then(function (item) {
-						res.json(item);
-					}, function (error) {
-						res.error(error && error.toString());
+					
+					promise.when(me.createContextFromRequest(req), function (context) {
+						r.create(context, modelQuery, req.body).then(function (item) {
+							res.created().json(item);
+						}, function (error) {
+							res.error(error && error.toString());
+						});
 					});
-				}
-			))(req, res, next);
+				}))
+			)(req, res, next);
 		}
 		return api;
 	}
 });
 resource.ModelResource.implement({
-	createChildAPI: function (parentModelQueryAccessor) {
-		var me = this, api = this.super();
-
-		console.log("createChildAPI", this.Model);
+	createChildAPI: function (r, parentModelQueryAccessor) {
+		var me = this, api = this.super.apply(this, arguments);
 
 		for(var n in this.Model.prototype) {
 			var child = this.Model.prototype[n];
 			if(resource.ChildResource.isinstance(child)) {
 				// found child resource. Create its API, and define a model query
 				// accessor
-				api["/" + n] = child.createAPI(function (args, i, modelQuery) {
+				api["/" + n] = child.createAPI(child, function (args, i, modelQuery) {
 					// top of args stack is model slug
 					i = i || 0;
 					
@@ -128,3 +217,15 @@ resource.ModelResource.implement({
 		return api;
 	}
 });
+
+
+resource.createAPI = function () {
+	var api = {};
+	for(var n in resource.resources) {
+		var r = resource.resources[n];
+		api[n] = r.createAPI(r);
+	};
+	console.log("API", api);
+	return api;
+}
+

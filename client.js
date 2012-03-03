@@ -1,9 +1,16 @@
 
-var resource = module.exports = require('resource');
+var resource = module.exports = require('./lib/resource');
+
+var ServerDataStore = resource.ServerDataStore = resource.Resource.derived({
+	
+});
 
 resource.Resource.implement({
 	dataStoreFactory: function (type, resource) {
-		return null;
+		return new ServerDataStore();
 	}
 });
 
+resource.export = function (resources) {
+	return resources;
+}

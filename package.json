@@ -2,12 +2,12 @@
   "author": "Sean Micklethwaite <sean@sdmworld.co.uk> (sdmworld.co.uk)",
   "name": "resource",
   "description": "A RESTful API generator",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "repository": {
     "url": ""
   },
   "dependencies": {
-    "coop": ">=0.0.1",
+    "coop": ">=0.1.5",
     "dispatch": ">=0.2.0",
     "node-promise": ">=0.5.1",
     "event-queue": "https://github.com/tehsenaus/reactor-commonjs/tarball/master",
