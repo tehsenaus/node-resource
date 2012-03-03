@@ -34,7 +34,7 @@ function serialize (context, x) {
 /**
  * This is the join point between the server and client.
  **/
-var ServerPublicResource = resource.DelegateResource.derived({
+var ServerPublicResource = resource.ServerPublicResource = resource.DelegateResource.derived({
 	options: {
 		name: "ServerPublicResource"
 	},
@@ -43,7 +43,7 @@ var ServerPublicResource = resource.DelegateResource.derived({
 		this.super.apply(this, coop.pop(arguments));	
 	},
 	list: function (context) {
-		return this.super.call(this, arguments).then(function (items) {
+		return this.super.apply(this, arguments).then(function (items) {
 			return items.map(serialize.bind(this, context));
 		})
 	}
@@ -54,7 +54,6 @@ resource.export = function (resources, baseURL) {
 	var rs = resource.resources = {};
 	for(var n in resources) {
 		rs[n] = new ServerPublicResource(baseURL + n, resources[n]);
-		console.log(n, rs[n], resources[n]);
 	};
 	return resources;
 }
@@ -62,22 +61,6 @@ resource.export = function (resources, baseURL) {
 
 
 // API generation
-
-resource.DelegateResource.implement({
-	createAPI: function () {
-		return this.resource.createAPI.apply(this.resource, arguments);
-	},
-	createAPIMiddleware: function () {
-		return this.resource.createAPIMiddleware.apply(this.resource, arguments);
-	},
-	createContextFromRequest: function (req) {
-		return this.resource.createContextFromRequest.apply(this.resource, arguments);
-	},
-	createQueryFromSlug: function () {
-		return this.resource.createQueryFromSlug.apply(this.resource, arguments);
-	}
-});
-
 
 function handler(fn) {
 	return function (req, res) {
@@ -89,37 +72,59 @@ function handler(fn) {
 	}
 }
 function readHandler (r, fn) {
-	return r.createAPIMiddleware()
+	var _handler = r.createAPIMiddleware()
 		.use(handler(function (req,res) {
 			var me = this, args = [].slice.call(arguments);
 			return promise.when(r.createContextFromRequest(req), function (context) {
-				return fn.apply(me, [context].concat(args));
+				return fn.apply(me, [context,req,res].concat(req.routeArgs));
 			});
 		}));
+
+	return function (req, res, next) {
+		// save routing args
+		req.routeArgs = [].slice.call(arguments, 3);
+		return _handler(req, res);
+	}
 }
 function modificationHandler (r, fn) {
-	return r.createAPIMiddleware()
+	var _handler = r.createAPIMiddleware()
 		.use(connect.bodyParser())
 		.use(handler(function (req,res) {
 			var me = this, args = [].slice.call(arguments);
 			return promise.when(r.createContextFromRequest(req), function (context) {
-				return fn.apply(me, [context].concat(args));
+				return fn.apply(me, [context,req,res].concat(req.routeArgs));
 			});
 		}));
+	
+	return function (req, res, next) {
+		// save routing args
+		req.routeArgs = [].slice.call(arguments, 3);
+		return _handler(req, res);
+	}
 }
 
 
-resource.DataStoreResource.implement({
+resource.DelegateResource.implement({
+	createAPI: function () {
+		return this.resource.createAPI.apply(this.resource, arguments);
+	},
+	createChildAPI: function (r) {
+		return this.resource.createChildAPI.apply(this.resource, arguments);
+	},
+	createAPIMiddleware: function () {
+		return this.resource.createAPIMiddleware.apply(this.resource, arguments);
+	},
+	createContextFromRequest: function (req) {
+		return this.resource.createContextFromRequest.apply(this.resource, arguments);
+	}
+});
+
+resource.Resource.implement({
 	createContextFromRequest: function (req) {
 		return this.createDefaultContextFromRequest(req);
 	},
 	createDefaultContextFromRequest: function (req) {
 		return { isServer: true };
-	},
-	createQueryFromSlug: function (slug) {
-		return {
-			id: slug
-		};
 	},
 	createChildAPI: function (r) {
 		return {
@@ -133,7 +138,7 @@ resource.DataStoreResource.implement({
 	createAPI: function (r) {
 		var me = this;
 		return {
-			"/:id": this.createChildAPI(r),
+			"/:id": r.createChildAPI(r),
 			GET: readHandler(r, function (context,req,res) {
 				r.list(context, {}).then(function (data) {
 					res.json({
@@ -168,10 +173,9 @@ resource.ChildResource.implement({
 			return (me.createAPIMiddleware()
 				.use(connect.bodyParser())
 				.use(handler(function (req, res, next) {
-					var modelQuery = modelQueryAccessor(args);
-					
 					promise.when(me.createContextFromRequest(req), function (context) {
-						r.create(context, modelQuery, req.body).then(function (item) {
+						context.modelQuery = modelQueryAccessor(args);
+						r.create(context, req.body).then(function (item) {
 							res.created().json(item);
 						}, function (error) {
 							res.error(error && error.toString());
@@ -197,10 +201,8 @@ resource.ModelResource.implement({
 					i = i || 0;
 					
 					modelQuery = connect.utils.merge(
-						me.createQueryFromSlug(args[args.length - ++i]), modelQuery
+						r.createQueryFromSlug(args[args.length - ++i]), modelQuery
 					);
-					
-					console.log("create", args, modelQuery);
 
 					// parent model query accessor 
 					if(parentModelQueryAccessor) {
