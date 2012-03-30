@@ -46,6 +46,16 @@ var ServerPublicResource = resource.ServerPublicResource = resource.DelegateReso
 		return this.super.apply(this, arguments).then(function (items) {
 			return items.map(serialize.bind(this, context));
 		})
+	},
+	create: function (context) {
+		return this.super.apply(this, arguments).then(function (item) {
+			return serialize(context, item);
+		})
+	},
+	update: function (context) {
+		return this.super.apply(this, arguments).then(function (item) {
+			return serialize(context, item);
+		})
 	}
 });
 
