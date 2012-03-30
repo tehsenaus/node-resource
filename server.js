@@ -87,8 +87,9 @@ function readHandler (r, fn) {
 	}
 }
 function modificationHandler (r, fn) {
-	var _handler = r.createAPIMiddleware()
+	var _handler = connect()
 		.use(connect.bodyParser())
+		.use(r.createAPIMiddleware())
 		.use(handler(function (req,res) {
 			var me = this, args = [].slice.call(arguments);
 			return promise.when(r.createContextFromRequest(req), function (context) {
