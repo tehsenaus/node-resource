@@ -60,6 +60,7 @@ var ServerPublicResource = resource.ServerPublicResource = resource.DelegateReso
 });
 
 resource.export = function (resources, baseURL) {
+	console.log("Exporting resources...");
 	baseURL = baseURL || '/api/';
 	var rs = resource.resources = {};
 	for(var n in resources) {
@@ -137,20 +138,30 @@ resource.Resource.implement({
 	createDefaultContextFromRequest: function (req) {
 		return { isServer: true };
 	},
-	createChildAPI: function (r) {
+	createChildAPI: function (r, modelQueryAccessor) {
 		return {
-			GET: readHandler(r, function (context,req,res,slug) {
+			GET: readHandler(r, function (context,req,res) {
+				var slug = arguments[arguments.length-1];
+				
+				if(modelQueryAccessor) {
+					var args = Array.prototype.slice.call(arguments, 3);
+					args.pop();
+					context.modelQuery = modelQueryAccessor(args);
+				}
+
 				r.list(context, r.createQueryFromSlug(slug)).then(function (data) {
 					res.json(data[0]);
 				})
 			})
 		}
 	},
-	createAPI: function (r) {
+	createAPI: function (r, modelQueryAccessor) {
 		var me = this;
 		return {
-			"/:id": r.createChildAPI(r),
+			"/:id": r.createChildAPI(r, modelQueryAccessor),
 			GET: readHandler(r, function (context,req,res) {
+				if(modelQueryAccessor)
+					context.modelQuery = modelQueryAccessor(Array.prototype.slice.call(arguments, 3));
 				r.list(context, {}).then(function (data) {
 					res.json({
 						objects: data
@@ -177,7 +188,7 @@ resource.Resource.implement({
 resource.ChildResource.implement({
 	createAPI: function (r, modelQueryAccessor) {
 		var me = this;
-		var api = this.super(r);
+		var api = this.super(r, modelQueryAccessor);
 
 		api.POST = function (req, res, next) {
 			var args = Array.prototype.slice.call(arguments, 3);
@@ -202,12 +213,13 @@ resource.ModelResource.implement({
 	createChildAPI: function (r, parentModelQueryAccessor) {
 		var me = this, api = this.super.apply(this, arguments);
 
-		for(var n in this.Model.prototype) {
+		for(var n in this.Model.prototype) (function (n) {
 			var child = this.Model.prototype[n];
-			if(resource.ChildResource.isinstance(child)) {
+			if(n != 'resource' && resource.ChildResource.isinstance(child)) {
 				// found child resource. Create its API, and define a model query
 				// accessor
-				api["/" + n] = child.createAPI(child, function (args, i, modelQuery) {
+				var childAPI = new ServerPublicResource(r.resourceURL + '/' + n, child);
+				api["/" + n] = childAPI.createAPI(childAPI, function (args, i, modelQuery) {
 					// top of args stack is model slug
 					i = i || 0;
 					
@@ -218,14 +230,14 @@ resource.ModelResource.implement({
 					// parent model query accessor 
 					if(parentModelQueryAccessor) {
 						var parentModelQuery = {};
-						parentModelQuery[child.name] = modelQuery;
+						parentModelQuery[me.name] = modelQuery;
 						return parentModelQueryAccessor(args, i, parentModelQuery);
 					} else {
 						return modelQuery;
 					}
 				});
 			}
-		}
+		}).call(this, n);
 
 		return api;
 	}
